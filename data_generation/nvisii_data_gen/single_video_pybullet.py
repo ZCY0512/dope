@@ -55,6 +55,11 @@ parser.add_argument(
     help='If you have a single obj file, path to the obj directly.'
 )
 parser.add_argument(
+    '--path_single_child',
+    default='/home/chengyan/disk2/DexGraspNet/output/test/object_mesh.obj',
+    help='If you have a single obj file, path to the obj directly.'
+)
+parser.add_argument(
     '--scale',
     default=1,
     type=float,
@@ -64,7 +69,7 @@ parser.add_argument(
 
 parser.add_argument(
     '--skyboxes_folder',
-    default='dome_hdri_haven/',
+    default='/home/chengyan/disk2/Deep_Object_Pose/data_generation/dome_hdri_haven/',
     help = "dome light hdr"
 )
 parser.add_argument(
@@ -230,7 +235,6 @@ visii.set_camera_entity(camera)
 # load a random skybox
 skyboxes = glob.glob(f'{opt.skyboxes_folder}/*.hdr')
 skybox_random_selection = skyboxes[random.randint(0,len(skyboxes)-1)]
-
 dome_tex = visii.texture.create_from_file('dome_tex',skybox_random_selection)
 visii.set_dome_light_texture(dome_tex)
 visii.set_dome_light_intensity(random.uniform(1.1,2))
@@ -395,6 +399,798 @@ def adding_mesh_object(
         names_to_export.append(entity_name)
         add_cuboid(entity_name, scale=scale, debug=debug)
 
+def adding_mesh_object_with_child(
+        name, 
+        obj_to_load, 
+        texture_to_load, 
+        model_info_path=None, 
+        scale=1, 
+        debug=False,
+        child_obj_to_load=None,
+        child_texture_to_load=None,
+        child_scale=1
+    ):
+    global mesh_loaded, visii_pybullet, names_to_export
+
+    def create_entity(name, obj_to_load, texture_to_load, scale):
+        if texture_to_load is None:
+            toys = load_obj_scene(obj_to_load)
+            # print("toys is",toys,obj_to_load)
+            if len(toys) > 1: 
+                print("more than one model in the object, materials might be wrong!")
+            toy_transform = visii.entity.get(toys[0]).get_transform()
+            toy_material = visii.entity.get(toys[0]).get_material()
+            toy_mesh = visii.entity.get(toys[0]).get_mesh()        
+
+            obj_export = visii.entity.create(
+                    name = name,
+                    transform = visii.transform.create(
+                        name = name, 
+                        position = toy_transform.get_position(),
+                        rotation = toy_transform.get_rotation(),
+                        scale = toy_transform.get_scale(),
+                    ),
+                    material = toy_material,
+                    mesh = visii.mesh.create_from_file(name, obj_to_load),
+                )
+
+            toy_transform = obj_export.get_transform()
+            obj_export.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+            for toy in toys:
+                visii.entity.remove(toy)
+
+            toys = [name]
+        else:
+            toys = [name]
+
+            if obj_to_load in mesh_loaded:
+                toy_mesh = mesh_loaded[obj_to_load]
+            else:
+                toy_mesh = visii.mesh.create_from_file(name, obj_to_load)
+                mesh_loaded[obj_to_load] = toy_mesh
+
+            toy = visii.entity.create(
+                name=name,
+                transform=visii.transform.create(name),
+                mesh=toy_mesh,
+                material=visii.material.create(name)
+            )
+
+            toy_rgb_tex = visii.texture.create_from_file(name, texture_to_load)
+            toy.get_material().set_base_color_texture(toy_rgb_tex)
+            toy.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+            toy_transform = toy.get_transform()
+
+        toy_transform.set_scale(visii.vec3(scale))
+        toy_transform.set_position(
+            visii.vec3(
+                random.uniform(0.1, 2),
+                random.uniform(-1, 1),
+                random.uniform(-1, 1),
+            )
+        )
+        toy_transform.set_rotation(
+            visii.quat(
+                random.uniform(0, 1),
+                random.uniform(0, 1),
+                random.uniform(0, 1),
+                random.uniform(0, 1),
+            )
+        )
+        return toy_transform, toys
+
+    # Create parent entity
+    parent_transform, parent_toys = create_entity(name, obj_to_load, texture_to_load, scale)
+    # Create child entity if provided
+    toys2 = load_obj_scene(child_obj_to_load)
+    if child_obj_to_load:
+        child_name = f"{name}_child"
+        child_transform, child_toys = create_entity(child_name, child_obj_to_load, child_texture_to_load, child_scale)
+        child_transform.set_parent(parent_transform)
+        # parent_toys.extend(child_toys)
+        # print('parent toys are',parent_toys,'child toys are',child_name)
+    # Add symmetry_corrected transform
+    child_transform = visii.transform.create(f"{parent_transform.get_name()}_symmetry_corrected")
+    print("what is this",f"{parent_transform.get_name()}_symmetry_corrected")
+    child_transform.set_parent(parent_transform)
+
+    # store symmetry transforms for later use.
+    symmetry_transforms = get_symmetry_transformations(model_info_path)
+
+    # create physics for object
+    id_pybullet = create_physics(name, mass=(np.random.rand() * 5))
+
+    if model_info_path is not None:
+        try:
+            with open(model_info_path) as json_file:
+                model_info = json.load(json_file)
+        except FileNotFoundError:
+            model_info = {}
+    else:
+        model_info = {}
+
+    visii_pybullet.append(
+        {
+            'visii_id': name,
+            'bullet_id': id_pybullet,
+            'base_rot': None,
+            'model_info': model_info,
+            'symmetry_transforms': symmetry_transforms
+        }
+    )
+    gemPos, gemOrn = p.getBasePositionAndOrientation(id_pybullet)
+    force_rand = 10
+    object_position = 0.01
+    p.applyExternalForce(
+        id_pybullet,
+        -1,
+        [random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand)],
+        [random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position)],
+        flags=p.WORLD_FRAME
+    )
+
+    for entity_name in parent_toys:
+        names_to_export.append(entity_name)
+        add_cuboid(entity_name, scale=scale, debug=debug)
+        print('entity name is ',entity_name)
+
+
+def adding_mesh_object_with_child2(
+        name, 
+        obj_to_load, 
+        texture_to_load, 
+        model_info_path=None, 
+        scale=1, 
+        debug=False,
+        child_name=None, 
+        child_obj_to_load=None, 
+        child_texture_to_load=None,
+        child_scale=1
+    ):
+    global mesh_loaded, visii_pybullet, names_to_export
+
+    if texture_to_load is None:
+        toys = load_obj_scene(obj_to_load)
+        if len(toys) > 1: 
+            print("more than one model in the object, \
+                   materials might be wrong!")
+        toy_transform = visii.entity.get(toys[0]).get_transform()
+        toy_material = visii.entity.get(toys[0]).get_material()
+        toy_mesh = visii.entity.get(toys[0]).get_mesh()        
+
+        obj_export = visii.entity.create(
+                name = name,
+                transform = visii.transform.create(
+                    name = name, 
+                    position = toy_transform.get_position(),
+                    rotation = toy_transform.get_rotation(),
+                    scale = toy_transform.get_scale(),
+                ),
+                material = toy_material,
+                mesh = visii.mesh.create_from_file(name,obj_to_load),
+            )
+
+        toy_transform = obj_export.get_transform()
+        obj_export.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        for toy in toys:
+            visii.entity.remove(toy)
+
+        toys = [name]
+    else:
+        toys = [name]
+
+        if obj_to_load in mesh_loaded:
+            toy_mesh = mesh_loaded[obj_to_load]
+        else:
+            toy_mesh = visii.mesh.create_from_file(name, obj_to_load)
+            mesh_loaded[obj_to_load] = toy_mesh
+
+        toy = visii.entity.create(
+            name=name,
+            transform=visii.transform.create(name),
+            mesh=toy_mesh,
+            material=visii.material.create(name)
+        )
+
+        toy_rgb_tex = visii.texture.create_from_file(name, texture_to_load)
+        toy.get_material().set_base_color_texture(toy_rgb_tex)
+        toy.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        toy_transform = toy.get_transform()
+
+    toy_transform.set_scale(visii.vec3(scale))
+    toy_transform.set_position(
+        visii.vec3(
+            random.uniform(0.1, 2),
+            random.uniform(-1, 1),
+            random.uniform(-1, 1),
+        )
+    )
+    toy_transform.set_rotation(
+        visii.quat(
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+        )
+    )
+
+    # Add symmetry_corrected transform
+    child_transform = visii.transform.create(f"{toy_transform.get_name()}_symmetry_corrected")
+    child_transform.set_parent(toy_transform)
+
+    # Store symmetry transforms for later use.
+    symmetry_transforms = get_symmetry_transformations(model_info_path)
+
+    # Create physics for object
+    id_pybullet = create_physics(name, mass=(np.random.rand() * 5))
+
+    if model_info_path is not None:
+        try:
+            with open(model_info_path) as json_file:
+                model_info = json.load(json_file)
+        except FileNotFoundError:
+            model_info = {}
+    else:
+        model_info = {}
+
+    visii_pybullet.append(
+        {
+            'visii_id': name,
+            'bullet_id': id_pybullet,
+            'base_rot': None,
+            'model_info': model_info,
+            'symmetry_transforms': symmetry_transforms
+        }
+    )
+    gemPos, gemOrn = p.getBasePositionAndOrientation(id_pybullet)
+    force_rand = 10
+    object_position = 0.01
+    p.applyExternalForce(
+        id_pybullet,
+        -1,
+        [random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand)],
+        [random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position)],
+        flags=p.WORLD_FRAME
+    )
+
+    for entity_name in toys:
+        names_to_export.append(entity_name)
+        add_cuboid(entity_name, scale=scale, debug=debug)
+
+    # Add child mesh
+    if child_name and child_obj_to_load:
+        if child_texture_to_load is None:
+            child_mesh = visii.mesh.create_from_file(child_name, child_obj_to_load)
+        else:
+            if child_obj_to_load in mesh_loaded:
+                child_mesh = mesh_loaded[child_obj_to_load]
+            else:
+                child_mesh = visii.mesh.create_from_file(child_name, child_obj_to_load)
+                mesh_loaded[child_obj_to_load] = child_mesh
+
+        child_entity = visii.entity.create(
+            name=child_name,
+            transform=visii.transform.create(child_name),
+            mesh=child_mesh,
+            material=visii.material.create(child_name)
+        )
+
+        if child_texture_to_load:
+            child_rgb_tex = visii.texture.create_from_file(child_name, child_texture_to_load)
+            child_entity.get_material().set_base_color_texture(child_rgb_tex)
+            child_entity.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        child_transform = child_entity.get_transform()
+        child_transform.set_scale(visii.vec3(child_scale))
+        child_transform.set_parent(toy_transform)
+
+        names_to_export.append(child_name)
+        add_cuboid(child_name, scale=child_scale, debug=debug)
+
+
+def adding_mesh_object_with_child3(
+        name, 
+        obj_to_load, 
+        texture_to_load, 
+        model_info_path=None, 
+        scale=1, 
+        debug=False,
+        child_name=None, 
+        child_obj_to_load=None, 
+        child_texture_to_load=None,
+        child_scale=1
+    ):
+    global mesh_loaded, visii_pybullet, names_to_export
+
+    if texture_to_load is None:
+        toys = load_obj_scene(obj_to_load)
+        if len(toys) > 1: 
+            print("more than one model in the object, \
+                   materials might be wrong!")
+        toy_transform = visii.entity.get(toys[0]).get_transform()
+        toy_material = visii.entity.get(toys[0]).get_material()
+        toy_mesh = visii.entity.get(toys[0]).get_mesh()        
+
+        obj_export = visii.entity.create(
+                name = name,
+                transform = visii.transform.create(
+                    name = name, 
+                    position = toy_transform.get_position(),
+                    rotation = toy_transform.get_rotation(),
+                    scale = toy_transform.get_scale(),
+                ),
+                material = toy_material,
+                mesh = visii.mesh.create_from_file(name,obj_to_load),
+            )
+
+        toy_transform = obj_export.get_transform()
+        obj_export.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        for toy in toys:
+            visii.entity.remove(toy)
+
+        toys = [name]
+    else:
+        toys = [name]
+
+        if obj_to_load in mesh_loaded:
+            toy_mesh = mesh_loaded[obj_to_load]
+        else:
+            toy_mesh = visii.mesh.create_from_file(name, obj_to_load)
+            mesh_loaded[obj_to_load] = toy_mesh
+
+        toy = visii.entity.create(
+            name=name,
+            transform=visii.transform.create(name),
+            mesh=toy_mesh,
+            material=visii.material.create(name)
+        )
+
+        toy_rgb_tex = visii.texture.create_from_file(name, texture_to_load)
+        toy.get_material().set_base_color_texture(toy_rgb_tex)
+        toy.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        toy_transform = toy.get_transform()
+
+    toy_transform.set_scale(visii.vec3(scale))
+    toy_transform.set_position(
+        visii.vec3(
+            random.uniform(0.1, 2),
+            random.uniform(-1, 1),
+            random.uniform(-1, 1),
+        )
+    )
+    toy_transform.set_rotation(
+        visii.quat(
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+        )
+    )
+
+    # Add symmetry_corrected transform
+    child_transform = visii.transform.create(f"{toy_transform.get_name()}_symmetry_corrected")
+    child_transform.set_parent(toy_transform)
+
+    # Store symmetry transforms for later use.
+    symmetry_transforms = get_symmetry_transformations(model_info_path)
+
+    # Create physics for object
+    id_pybullet = create_physics(name, mass=(np.random.rand() * 5))
+
+    if model_info_path is not None:
+        try:
+            with open(model_info_path) as json_file:
+                model_info = json.load(json_file)
+        except FileNotFoundError:
+            model_info = {}
+    else:
+        model_info = {}
+
+    visii_pybullet.append(
+        {
+            'visii_id': name,
+            'bullet_id': id_pybullet,
+            'base_rot': None,
+            'model_info': model_info,
+            'symmetry_transforms': symmetry_transforms
+        }
+    )
+    gemPos, gemOrn = p.getBasePositionAndOrientation(id_pybullet)
+    force_rand = 10
+    object_position = 0.01
+    p.applyExternalForce(
+        id_pybullet,
+        -1,
+        [random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand)],
+        [random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position)],
+        flags=p.WORLD_FRAME
+    )
+
+    for entity_name in toys:
+        names_to_export.append(entity_name)
+        add_cuboid(entity_name, scale=scale, debug=debug)
+
+    # Add child mesh
+    if child_name and child_obj_to_load:
+        if child_texture_to_load is None:
+            child_mesh = visii.mesh.create_from_file(child_name, child_obj_to_load)
+        else:
+            if child_obj_to_load in mesh_loaded:
+                child_mesh = mesh_loaded[child_obj_to_load]
+            else:
+                child_mesh = visii.mesh.create_from_file(child_name, child_obj_to_load)
+                mesh_loaded[child_obj_to_load] = child_mesh
+
+        child_entity = visii.entity.create(
+            name=child_name,
+            transform=visii.transform.create(child_name),
+            mesh=child_mesh,
+            material=visii.material.create(child_name)
+        )
+
+        if child_texture_to_load:
+            child_rgb_tex = visii.texture.create_from_file(child_name, child_texture_to_load)
+            child_entity.get_material().set_base_color_texture(child_rgb_tex)
+            child_entity.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        child_transform = child_entity.get_transform()
+        child_transform.set_scale(visii.vec3(child_scale))
+        child_transform.set_parent(toy_transform)
+
+        print(f"Child {child_name} added with parent {name}")
+
+        names_to_export.append(child_name)
+        add_cuboid(child_name, scale=child_scale, debug=debug)
+
+def adding_mesh_object_with_child4(
+        name, 
+        obj_to_load, 
+        texture_to_load, 
+        model_info_path=None, 
+        scale=1, 
+        debug=False,
+        child_name=None, 
+        child_obj_to_load=None, 
+        child_texture_to_load=None,
+        child_scale=1
+    ):
+    global mesh_loaded, visii_pybullet, names_to_export
+
+    # Main object creation
+    if texture_to_load is None:
+        toys = load_obj_scene(obj_to_load)
+        if len(toys) > 1: 
+            print("more than one model in the object, materials might be wrong!")
+        toy_transform = visii.entity.get(toys[0]).get_transform()
+        toy_material = visii.entity.get(toys[0]).get_material()
+        toy_mesh = visii.entity.get(toys[0]).get_mesh()
+
+        obj_export = visii.entity.create(
+                name=name,
+                transform=visii.transform.create(
+                    name=name, 
+                    position=toy_transform.get_position(),
+                    rotation=toy_transform.get_rotation(),
+                    scale=toy_transform.get_scale(),
+                ),
+                material=toy_material,
+                mesh=visii.mesh.create_from_file(name, obj_to_load),
+            )
+
+        toy_transform = obj_export.get_transform()
+        obj_export.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        for toy in toys:
+            visii.entity.remove(toy)
+
+        toys = [name]
+    else:
+        toys = [name]
+
+        if obj_to_load in mesh_loaded:
+            toy_mesh = mesh_loaded[obj_to_load]
+        else:
+            toy_mesh = visii.mesh.create_from_file(name, obj_to_load)
+            mesh_loaded[obj_to_load] = toy_mesh
+
+        toy = visii.entity.create(
+            name=name,
+            transform=visii.transform.create(name),
+            mesh=toy_mesh,
+            material=visii.material.create(name)
+        )
+
+        toy_rgb_tex = visii.texture.create_from_file(name, texture_to_load)
+        toy.get_material().set_base_color_texture(toy_rgb_tex)
+        toy.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        toy_transform = toy.get_transform()
+
+    toy_transform.set_scale(visii.vec3(scale))
+    toy_transform.set_position(
+        visii.vec3(
+            random.uniform(0.1, 2),
+            random.uniform(-1, 1),
+            random.uniform(-1, 1),
+        )
+    )
+    toy_transform.set_rotation(
+        visii.quat(
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+        )
+    )
+
+    # Add symmetry_corrected transform
+    child_transform = visii.transform.create(f"{toy_transform.get_name()}_symmetry_corrected")
+    child_transform.set_parent(toy_transform)
+
+    # Store symmetry transforms for later use.
+    symmetry_transforms = get_symmetry_transformations(model_info_path)
+
+    # Create physics for object
+    id_pybullet = create_physics(name, mass=(np.random.rand() * 5))
+
+    if model_info_path is not None:
+        try:
+            with open(model_info_path) as json_file:
+                model_info = json.load(json_file)
+        except FileNotFoundError:
+            model_info = {}
+    else:
+        model_info = {}
+
+    visii_pybullet.append(
+        {
+            'visii_id': name,
+            'bullet_id': id_pybullet,
+            'base_rot': None,
+            'model_info': model_info,
+            'symmetry_transforms': symmetry_transforms
+        }
+    )
+    gemPos, gemOrn = p.getBasePositionAndOrientation(id_pybullet)
+    force_rand = 10
+    object_position = 0.01
+    p.applyExternalForce(
+        id_pybullet,
+        -1,
+        [random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand)],
+        [random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position)],
+        flags=p.WORLD_FRAME
+    )
+
+    for entity_name in toys:
+        names_to_export.append(entity_name)
+        add_cuboid(entity_name, scale=scale, debug=debug)
+
+    # Add child mesh
+    if child_name and child_obj_to_load:
+        if child_texture_to_load is None:
+            child_mesh = visii.mesh.create_from_file(child_name, child_obj_to_load)
+        else:
+            if child_obj_to_load in mesh_loaded:
+                child_mesh = mesh_loaded[child_obj_to_load]
+            else:
+                child_mesh = visii.mesh.create_from_file(child_name, child_obj_to_load)
+                mesh_loaded[child_obj_to_load] = child_mesh
+
+        child_entity = visii.entity.create(
+            name=child_name,
+            transform=visii.transform.create(child_name),
+            mesh=child_mesh,
+            material=visii.material.create(child_name)
+        )
+
+        if child_texture_to_load:
+            child_rgb_tex = visii.texture.create_from_file(child_name, child_texture_to_load)
+            child_entity.get_material().set_base_color_texture(child_rgb_tex)
+            child_entity.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        child_transform = child_entity.get_transform()
+        child_transform.set_scale(visii.vec3(child_scale))
+        child_transform.set_parent(toy_transform)
+
+        print(f"Child {child_name} added with parent {name}")
+
+        names_to_export.append(child_name)
+        add_cuboid(child_name, scale=child_scale, debug=debug)
+    else:
+        print("No child object to add")
+
+def adding_mesh_object_with_child5(
+        name, 
+        obj_to_load, 
+        texture_to_load, 
+        model_info_path=None, 
+        scale=1, 
+        debug=False,
+        child_name=None, 
+        child_obj_to_load=None, 
+        child_texture_to_load=None,
+        child_scale=1
+    ):
+    global mesh_loaded, visii_pybullet, names_to_export
+
+    # Main object creation
+    if texture_to_load is None:
+        toys = load_obj_scene(obj_to_load)
+        if len(toys) > 1: 
+            print("More than one model in the object, materials might be wrong!")
+        toy_transform = visii.entity.get(toys[0]).get_transform()
+        toy_material = visii.entity.get(toys[0]).get_material()
+        toy_mesh = visii.entity.get(toys[0]).get_mesh()
+
+        obj_export = visii.entity.create(
+                name=name,
+                transform=visii.transform.create(
+                    name=name, 
+                    position=toy_transform.get_position(),
+                    rotation=toy_transform.get_rotation(),
+                    scale=toy_transform.get_scale(),
+                ),
+                material=toy_material,
+                mesh=visii.mesh.create_from_file(name, obj_to_load),
+            )
+
+        toy_transform = obj_export.get_transform()
+        obj_export.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        for toy in toys:
+            visii.entity.remove(toy)
+
+        toys = [name]
+    else:
+        toys = [name]
+
+        if obj_to_load in mesh_loaded:
+            toy_mesh = mesh_loaded[obj_to_load]
+        else:
+            toy_mesh = visii.mesh.create_from_file(name, obj_to_load)
+            mesh_loaded[obj_to_load] = toy_mesh
+
+        toy = visii.entity.create(
+            name=name,
+            transform=visii.transform.create(name),
+            mesh=toy_mesh,
+            material=visii.material.create(name)
+        )
+
+        toy_rgb_tex = visii.texture.create_from_file(name, texture_to_load)
+        toy.get_material().set_base_color_texture(toy_rgb_tex)
+        toy.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        toy_transform = toy.get_transform()
+
+    toy_transform.set_scale(visii.vec3(scale))
+    toy_transform.set_position(
+        visii.vec3(
+            random.uniform(0.1, 2),
+            random.uniform(-1, 1),
+            random.uniform(-1, 1),
+        )
+    )
+    toy_transform.set_rotation(
+        visii.quat(
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+            random.uniform(0, 1),
+        )
+    )
+
+    # Add symmetry_corrected transform
+    child_transform = visii.transform.create(f"{toy_transform.get_name()}_symmetry_corrected")
+    child_transform.set_parent(toy_transform)
+
+    # Store symmetry transforms for later use.
+    symmetry_transforms = get_symmetry_transformations(model_info_path)
+
+    # Create physics for object
+    id_pybullet = create_physics(name, mass=(np.random.rand() * 5))
+
+    if model_info_path is not None:
+        try:
+            with open(model_info_path) as json_file:
+                model_info = json.load(json_file)
+        except FileNotFoundError:
+            model_info = {}
+    else:
+        model_info = {}
+
+    visii_pybullet.append(
+        {
+            'visii_id': name,
+            'bullet_id': id_pybullet,
+            'base_rot': None,
+            'model_info': model_info,
+            'symmetry_transforms': symmetry_transforms
+        }
+    )
+    gemPos, gemOrn = p.getBasePositionAndOrientation(id_pybullet)
+    force_rand = 10
+    object_position = 0.01
+    p.applyExternalForce(
+        id_pybullet,
+        -1,
+        [random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand),
+         random.uniform(-force_rand, force_rand)],
+        [random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position),
+         random.uniform(-object_position, object_position)],
+        flags=p.WORLD_FRAME
+    )
+
+    for entity_name in toys:
+        names_to_export.append(entity_name)
+        add_cuboid(entity_name, scale=scale, debug=debug)
+
+    # Add child mesh
+    if child_name and child_obj_to_load:
+        if debug:
+            print(f"Adding child object {child_name} with mesh {child_obj_to_load}")
+
+        if child_texture_to_load is None:
+            child_mesh = visii.mesh.create_from_file(child_name, child_obj_to_load)
+        else:
+            if child_obj_to_load in mesh_loaded:
+                child_mesh = mesh_loaded[child_obj_to_load]
+            else:
+                child_mesh = visii.mesh.create_from_file(child_name, child_obj_to_load)
+                mesh_loaded[child_obj_to_load] = child_mesh
+
+        child_entity = visii.entity.create(
+            name=child_name,
+            transform=visii.transform.create(child_name),
+            mesh=child_mesh,
+            material=visii.material.create(child_name)
+        )
+
+        if child_texture_to_load:
+            child_rgb_tex = visii.texture.create_from_file(child_name, child_texture_to_load)
+            child_entity.get_material().set_base_color_texture(child_rgb_tex)
+            child_entity.get_material().set_roughness(random.uniform(0.1, 0.5))
+
+        child_transform = child_entity.get_transform()
+        child_transform.set_scale(visii.vec3(child_scale))
+        child_transform.set_parent(toy_transform)
+
+        if debug:
+            print(f"Child {child_name} added with parent {name}")
+
+        names_to_export.append(child_name)
+        add_cuboid(child_name, scale=child_scale, debug=debug)
+    else:
+        if debug:
+            print("No child object to add")
+
+
+
 google_content_folder = glob.glob(opt.objs_folder_distrators + "*/")
 
 for i_obj in range(int(opt.nb_distractors)):
@@ -405,8 +1201,8 @@ for i_obj in range(int(opt.nb_distractors)):
     texture_to_load = toy_to_load + "/materials/textures/texture.png"
     name = "google_"+toy_to_load.split('/')[-2] + f"_{i_obj}"
 
-    adding_mesh_object(name, obj_to_load, texture_to_load, debug=opt.debug)
-
+    # adding_mesh_object(name, obj_to_load, texture_to_load, debug=opt.debug)
+    adding_mesh_object_with_child5(name, obj_to_load, texture_to_load, debug=opt.debug,child_obj_to_load=opt.path_single_child)
 if opt.path_single_obj is not None:
     for i_object in range(opt.nb_objects):
         model_info_path = os.path.dirname(opt.path_single_obj) + '/model_info.json'
@@ -414,12 +1210,20 @@ if opt.path_single_obj is not None:
         if not os.path.exists(model_info_path):
             model_info_path = None
 
-        adding_mesh_object(f"single_obj_{i_object}",
+        # adding_mesh_object(f"single_obj_{i_object}",
+        #                    opt.path_single_obj,
+        #                    None,
+        #                    model_info_path,
+        #                    scale=opt.scale,
+        #                    debug=opt.debug)        
+        adding_mesh_object_with_child5(f"single_obj_{i_object}",
                            opt.path_single_obj,
                            None,
                            model_info_path,
                            scale=opt.scale,
-                           debug=opt.debug)
+                           debug=opt.debug,
+                           child_obj_to_load=opt.path_single_child,
+                           )
 else:
     google_content_folder = glob.glob(opt.objs_folder + "*/")
 
@@ -563,7 +1367,7 @@ while True:
         if not i_frame % int(opt.skip_frame) == 0:
             continue
 
-        print(f"{str(i_render).zfill(5)}/{str(opt.nb_frames).zfill(5)}")
+        # print(f"{str(i_render).zfill(5)}/{str(opt.nb_frames).zfill(5)}")
 
         visii.sample_pixel_area(
             x_sample_interval = (0,1),
