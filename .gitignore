@@ -9,3 +9,4 @@ venv
 *.hdr
 google_scanned_models/
 scripts/nvisii_data_gen/output/dataset/
+scripts/nvisii_data_gen/output/
